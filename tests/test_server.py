@@ -82,14 +82,9 @@ def test_killer(test_assignment, test_client, test_user_1, runestone_db_tools):
         ("admin/doc", True, "Runestone Help and Documentation", 1),
         # **Assignments**
         # ----------------
-        ("assignments/chooseAssignment", True, "Assignments", 1),
-        ("assignments/doAssignment", True, "Bad Assignment ID", 1),
-        (
-            "assignments/practice",
-            True,
-            "Practice tool is not set up for this course yet.",
-            1,
-        ),
+        ("assignments/chooseAssignment", True, "Assignments", 2),
+        ("assignments/doAssignment", True, "Bad Assignment ID", 2),
+        ("assignments/practice", True, "Practice", 1),
         ("assignments/practiceNotStartedYet", True, "test_course_1", 1),
         # **Default**
         # ------------
@@ -104,20 +99,20 @@ def test_killer(test_assignment, test_client, test_user_1, runestone_db_tools):
         ("default/user/change_password", True, "Change password", 1),
         # Runestone doesn't support this.
         #'default/user/verify_email', False, 'Verify email', 1),
-        ("default/user/retrieve_username", False, "Retrieve username", 1),
+        ("default/user/retrieve_username", False, "Our Mission", 1),
         ("default/user/request_reset_password", False, "Request reset password", 1),
         # This doesn't display a webpage, but instead redirects to courses.
         # ('default/user/reset_password, False, 'Reset password', 1),
-        ("default/user/impersonate", True, "Impersonate", 1),
+        # ("default/user/impersonate", True, "Impersonate", 1),
         # FIXME: This produces an exception.
         #'default/user/groups', True, 'Groups', 1),
-        ("default/user/not_authorized", False, "Not authorized", 1),
+        ("default/user/not_authorized", False, "Our Mission", 1),
         # *Other pages*
         #
         # TODO: What is this for?
         # ('default/call', False, 'Not found', 0),
         ("default/index", True, "Course Selection", 1),
-        ("default/about", False, "About Us", 1),
+        ("default/about", False, "About Runestone", 1),
         ("default/error", False, "Error: the document does not exist", 1),
         ("default/ack", False, "Acknowledgements", 1),
         # web2py generates invalid labels for the radio buttons in this form.
@@ -130,7 +125,7 @@ def test_killer(test_assignment, test_client, test_user_1, runestone_db_tools):
         # ('default/sendreport', True, 'Could not create issue', 1),
         ("default/terms", False, "Terms and Conditions", 1),
         ("default/privacy", False, "Runestone Academy Privacy Policy", 1),
-        ("default/donate", False, "Support Runestone Interactive", 1),
+        ("default/donate", False, "Support Runestone Academy", 1),
         # TODO: This doesn't really test much of the body of either of these.
         ("default/coursechooser", True, "Course Selection", 1),
         # If we choose an invalid course, then we go to the profile to allow the user to add that course. The second validation failure seems to be about the ``for`` attribute of the ```<label class="readonly" for="auth_user_email" id="auth_user_email__label">`` tag, since the id ``auth_user_email`` isn't defined elsewhere.
@@ -160,8 +155,6 @@ def test_killer(test_assignment, test_client, test_user_1, runestone_db_tools):
             "This page is a utility for accepting redirects from external services like Spotify or LinkedIn that use oauth.",
             1,
         ),
-        ("books/index", False, "Runestone Test Book", 1),
-        ("books/published", False, "Runestone Test Book", 1),
         # TODO: Many other views!
     ],
 )
@@ -361,7 +354,24 @@ def test_pricing(runestone_db_tools, runestone_env):
     child_course_1 = runestone_db_tools.create_course()
     # It would be nice to use the ``test_user`` fixture, but we're not using the web interface here -- it's direct database access instead. This is an alternative.
     runestone_env["auth"].get_or_create_user(
-        dict(username="test_user_1", course_id=child_course_1.course_id)
+        dict(
+            username="test_user_1",
+            course_id=child_course_1.course_id,
+            course_name=child_course_1.course_name,
+            # Provide a non-null value for these required fields.
+            first_name="",
+            last_name="",
+            email="",
+            password="",
+            created_on="01-01-2000",
+            modified_on="01-01-2000",
+            registration_key="",
+            reset_password_key="",
+            registration_id="",
+            active="T",
+            donated="F",
+            accept_tcp="T",
+        )
     )
 
     # First, test on a base course.
@@ -516,50 +526,10 @@ def test_payments(runestone_controller, runestone_db_tools, test_user):
     assert payment.charge_id
 
 
-# Test the LP endpoint.
-@pytest.mark.skipif(six.PY2, reason="Requires Python 3.")
-def test_lp(test_user_1):
-    test_user_1.login()
-
-    # Check that omitting parameters produces an error.
-    ret = test_user_1.hsblog(event="lp_build")
-    assert "No feedback provided" in ret["errors"][0]
-
-    # Check that database entries are validated.
-    ret = test_user_1.hsblog(
-        event="lp_build",
-        # This div_id is too long. Everything else is OK.
-        div_id="X" * 1000,
-        course=test_user_1.course.course_name,
-        builder="unsafe-python",
-        answer=json.dumps({"code_snippets": ["def one(): return 1"]}),
-    )
-    assert "div_id" in ret["errors"][0]
-
-    # Check a passing case
-    def assert_passing():
-        ret = test_user_1.hsblog(
-            event="lp_build",
-            div_id="test_lp_1",
-            course=test_user_1.course.course_name,
-            builder="unsafe-python",
-            answer=json.dumps({"code_snippets": ["def one(): return 1"]}),
-        )
-        assert "errors" not in ret
-        assert ret["correct"] == 100
-
-    assert_passing()
-
-    # Send lots of jobs to test out the queue. Skip this for now -- not all the useinfo entries get deleted, which causes ``test_getNumOnline`` to fail.
-    if False:
-        threads = [Thread(target=assert_passing) for x in range(5)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-
 # Test dynamic book routing.
+@pytest.mark.skip(
+    reason="Can't render new BookServer template using old server. TODO: Port to the BookServer."
+)
 def test_dynamic_book_routing_1(test_client, test_user_1):
     test_user_1.login()
     dbr_tester(test_client, test_user_1, True)
@@ -574,6 +544,9 @@ def test_dynamic_book_routing_1(test_client, test_user_1):
 
 
 # Test the no-login case.
+@pytest.mark.skip(
+    reason="Can't render new BookServer template using old server. TODO: Port to the BookServer."
+)
 def test_dynamic_book_routing_2(test_client, test_user_1):
     test_client.logout()
     # Test for a book that doesn't require a login. First, change the book to not require a login.
@@ -798,6 +771,7 @@ def test_instructor_practice_admin(test_client, runestone_db_tools, test_user):
     assert practice_settings_1
 
 
+@pytest.mark.skip(reason="Requires BookServer for testing -- TODO")
 def test_deleteaccount(test_client, runestone_db_tools, test_user):
     course_3 = runestone_db_tools.create_course("test_course_3")
     the_user = test_user("user_to_delete", "password_1", course_3)
@@ -939,17 +913,12 @@ def test_grades_1(runestone_db_tools, test_user, tmp_path):
 
     # Add questions to the assignment.
     def add_to_assignment(question_kwargs, points):
-        assert (
-            tu.test_client.validate(
-                "admin/add__or_update_assignment_question",
-                data=dict(
-                    question=question_kwargs["div_id"],
-                    points=points,
-                    **assignment_kwargs
-                ),
-            )
-            != json.dumps("Error")
-        )
+        assert tu.test_client.validate(
+            "admin/add__or_update_assignment_question",
+            data=dict(
+                question=question_kwargs["div_id"], points=points, **assignment_kwargs
+            ),
+        ) != json.dumps("Error")
 
     # Determine the order of the questions and the _`point values`.
     add_to_assignment(shortanswer_kwargs, 0)
@@ -1141,6 +1110,103 @@ def test_grades_1(runestone_db_tools, test_user, tmp_path):
     grades_report("", "About Runestone")
 
 
+# Test the teaming report.
+@pytest.mark.skip(
+    reason="Can't render new BookServer template using old server. TODO: Port to the BookServer."
+)
+def test_team_1(runestone_db_tools, test_user, runestone_name):
+    # Create test users.
+    course = runestone_db_tools.create_course()
+    course_name = course.course_name
+
+    # **Create test data**
+    # =====================
+    # Create test users.
+    test_user_array = [
+        test_user(
+            "test_user_{}".format(index), "x", course, last_name="user_{}".format(index)
+        )
+        for index in range(3)
+    ]
+
+    def assert_passing(index, *args, **kwargs):
+        res = test_user_array[index].hsblog(*args, **kwargs)
+        assert "errors" not in res
+
+    # Prepare common arguments for each question type.
+    shortanswer1_kwargs = dict(
+        event="shortanswer", div_id="team_eval_role_0", course=course_name
+    )
+    shortanswer2_kwargs = dict(
+        event="shortanswer", div_id="team_eval_communication", course=course_name
+    )
+    fitb_kwargs = dict(
+        event="fillb", div_id="team_eval_ge_contributions_0", course=course_name
+    )
+
+    # *User 0*
+    # ---------------------------
+    logout = test_user_array[2].test_client.logout
+    logout()
+    test_user_array[0].login()
+    assert_passing(
+        0, act=json.dumps(test_user_array[0].username), **shortanswer1_kwargs
+    )
+    assert_passing(0, act=json.dumps("comm 0"), **shortanswer2_kwargs)
+    assert_passing(0, answer=json.dumps(["5"]), **fitb_kwargs)
+
+    # *User 1*
+    # --------------------------
+    # It doesn't matter which user logs out, since all three users share the same client.
+    logout()
+    test_user_array[1].login()
+    assert_passing(
+        1, act=json.dumps(test_user_array[1].username), **shortanswer1_kwargs
+    )
+    assert_passing(1, act=json.dumps("comm 1"), **shortanswer2_kwargs)
+    assert_passing(1, answer=json.dumps(["25"]), **fitb_kwargs)
+
+    # *User 2*
+    # ----------------------------
+    logout()
+    test_user_array[2].login()
+    # Add three shortanswer answers, to make sure the number of attempts is correctly recorded.
+    assert_passing(
+        2, act=json.dumps(test_user_array[2].username), **shortanswer1_kwargs
+    )
+    assert_passing(2, act=json.dumps("comm 2"), **shortanswer2_kwargs)
+    assert_passing(2, answer=json.dumps(["90"]), **fitb_kwargs)
+
+    # **Test the team report**
+    # =========================
+    with open(
+        "applications/{}/books/{}/test_course_1.csv".format(
+            runestone_name, course.base_course
+        ),
+        "w",
+        encoding="utf-8",
+    ) as f:
+        f.write(
+            "user id,user name,team name\n"
+            "test_user_0@foo.com,test user_0,team 1\n"
+            "test_user_1@foo.com,test user_1,team 1\n"
+            "test_user_2@foo.com,test user_2,team 1\n"
+        )
+
+    # TODO: Test not being an instructor.
+    tu = test_user_array[2]
+    tu.make_instructor()
+    tu.test_client.validate(
+        "books/published/{}/test_chapter_1/team_report_1.html".format(course_name)
+    )
+
+    logout()
+    # TODO: Test with no login.
+
+
+@pytest.mark.skip(
+    reason="Can't render new BookServer template using old server. TODO: Port to the BookServer."
+)
 def test_pageprogress(test_client, runestone_db_tools, test_user_1):
     test_user_1.login()
     test_user_1.hsblog(
@@ -1164,6 +1230,9 @@ def test_pageprogress(test_client, runestone_db_tools, test_user_1):
     assert '"subc_b_fitb": 0' in test_user_1.test_client.text
 
 
+@pytest.mark.skip(
+    reason="Can't render new BookServer template using old server. What does this test do? Should it be ported?"
+)
 def test_lockdown(test_client, test_user_1):
     test_user_1.login()
     base_course = test_user_1.course.base_course

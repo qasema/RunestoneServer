@@ -136,6 +136,7 @@ def web2py_server(runestone_name, web2py_server_address, pytestconfig):
     password = "pass"
 
     os.environ["WEB2PY_CONFIG"] = "test"
+    os.environ["BOOK_SERVER_CONFIG"] = "test"
     # HINT: make sure that ``0.py`` has something like the following, that reads this environment variable:
     #
     # .. code:: Python
@@ -437,6 +438,8 @@ class _RunestoneDbTools(object):
             term_start_date=term_start_date,
             login_required=login_required,
             student_price=student_price,
+            courselevel="",
+            institution="",
         )
         db.commit()
         return obj
@@ -631,7 +634,7 @@ class _TestUser(object):
         # Now, post the registration.
         self.test_client.validate(
             "default/user/register",
-            "Support Runestone Interactive" if self.is_free else "Payment Amount",
+            "Support Runestone Academy" if self.is_free else "Payment Amount",
             data=dict(
                 username=self.username,
                 first_name=self.first_name,
@@ -643,8 +646,6 @@ class _TestUser(object):
                 # Note that ``course_id`` is (on the form) actually a course name.
                 course_id=self.course.course_name,
                 accept_tcp="on",
-                donate="0",
-                _next="/runestone/default/index",
                 _formname="register",
             ),
         )
@@ -699,9 +700,7 @@ class _TestUser(object):
             if is_free is None:
                 expected_string = "Course Selection"
             else:
-                expected_string = (
-                    "Support Runestone Interactive" if is_free else "Payment Amount"
-                )
+                expected_string = "Support Runestone" if is_free else "Payment Amount"
         username = username or self.username
         first_name = first_name or self.first_name
         last_name = last_name or self.last_name

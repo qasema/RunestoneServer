@@ -34,6 +34,18 @@ def index():
         To begin, enter a project name below."""
         )
         # return dict(message=T('Welcome to CourseWare Manager'))
+        course_list = db.executesql(
+            "select * from library where for_classes = 'T' and is_visible = 'T'",
+            as_dict=True,
+        )
+        sections = set()
+        for course in course_list:
+            if course["shelf_section"] not in sections:
+                sections.add(course["shelf_section"])
+
+        basicvalues["course_list"] = course_list
+        basicvalues["sections"] = sections
+
     return basicvalues
 
 
@@ -65,7 +77,7 @@ def build():
             db.auth_membership.insert(user_id=auth.user.id, group_id=gid)
 
         base_course = request.vars.coursetype
-
+        bcdb = db(db.courses.course_name == base_course).select().first()
         if request.vars.startdate == "":
             request.vars.startdate = datetime.date.today()
         else:
@@ -91,6 +103,7 @@ def build():
         else:
             login_required = "true"
 
+        # TODO: Update new_server after full away from old server
         cid = db.courses.update_or_insert(
             course_name=request.vars.projectname,
             term_start_date=request.vars.startdate,
@@ -99,7 +112,16 @@ def build():
             login_required=login_required,
             python3=python3,
             courselevel=courselevel,
+            new_server=True if settings.running_bookserver else False,
         )
+
+        origin = getCourseOrigin(base_course)
+        if origin and origin.value == "PreTeXt":
+            origin_attrs = getCourseAttributesDict(bcdb.id)
+            for key in origin_attrs:
+                db.course_attributes.insert(
+                    course_id=cid, attr=key, value=origin_attrs[key]
+                )
 
         if request.vars.invoice:
             db.invoice_request.insert(

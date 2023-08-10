@@ -31,6 +31,42 @@ function gradeIndividualItem() {
 
     $(rightSideDiv)[0].style.visibility = "visible";
     rightSideDiv.html(""); //empty it out
+    rightSideDiv.html(`<div id='filterqs'
+    style="
+    width: 60%;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 5px;">
+    <select id="filterSelect">
+        <option value="nofilter">Show All</option>
+        <option value="filterto0">Show questions with a score of 0 or None</option>
+        <option value="filterto1">Show questions with a non-zero score</option>
+    </select>
+    `)
+    let rsd = document.querySelector("#filterSelect");
+    rsd.addEventListener('change',
+    function () {
+        let gPanels = document.querySelectorAll(".loading");
+        for (let panel of gPanels) {
+            let v = panel.querySelector("#gradingform").querySelector("#input-grade").value;
+            if (rsd.value == "filterto0") {
+                if (v == 0 || v == "") {
+                    panel.style.display = "block";
+                } else {
+                    panel.style.display = "none";
+                }
+            } else if (rsd.value == "filterto1") {
+                if (v > 0) {
+                    panel.style.display = "block";
+                } else {
+                    panel.style.display = "none";
+                }
+            } else {
+                panel.style.display = "block";
+            }
+        }
+    });
+
     //Not sure if questions or students should be the outer loop
     var mg = false;
     if (questions.length * sstudents.length > 1) {
@@ -164,29 +200,24 @@ function autoGrade() {
                 ajax_params.data.sid = student;
                 try {
                     res = await jQuery.ajax(ajax_params);
-                    $("#autogradingprogress").append(
+                    $("#autogradingprogress").prepend(
                         `${index + 1} of ${student_array.length}: ${student}
                         <a href="/runestone/dashboard/questiongrades?sid=${encodeURIComponent(
                             student
-                        )}&assignment_id=${encodeURIComponent(assignment)}">${students[student]
+                        )}&assignment_id=${encodeURIComponent(assignment)}">${
+                            students[student]
                         }</a>
                         ${res.message}
                         Score: ${res.total_mess} <br>`
                     );
                     total = total + res.total_mess;
-                    $("#autogradingprogress").animate({
-                        scrollTop: $("#autogradingprogress").height(),
-                    });
                 } catch (e) {
                     console.log(`Error when autograding ${student} is ${e}`);
                 }
             } // end for
-            $("#autogradingprogress").append(
-                `Average Score: ${total / student_array.length}`
+            $("#autogradingprogress").prepend(
+                `Average Score: ${total / student_array.length} <br>`
             );
-            $("#autogradingprogress").animate({
-                scrollTop: $("#autogradingprogress").height(),
-            });
             $("#gradingprogresstitle").html("<h3>Grading Complete</h3>");
             gradingSummary("autogradingsummary");
             $("#autogradesubmit").prop("disabled", false);
@@ -333,7 +364,8 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
         }
     }
     $.getJSON("/runestone/admin/htmlsrc", data, async function (result) {
-        var htmlsrc = result;
+        var htmlsrc = result.htmlsrc;
+        const attachURL = result.attach_url;
         var enforceDeadline = $("#enforceDeadline").is(":checked");
         var dl = showDeadline();
         await renderRunestoneComponent(htmlsrc, elementID + ">#questiondisplay", {
@@ -345,6 +377,7 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
             tzoff: new Date().getTimezoneOffset() / 60,
             multiGrader: multiGrader,
             gradingContainer: elementID,
+            attachURL: attachURL,
         });
     });
 
@@ -369,6 +402,7 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
                 sid: studentId,
                 grade: grade,
                 comment: comment,
+                assignmentid: $(document.getElementById("chaporassignselector")).val(),
             },
             success: function (data) {
                 jQuery(".grade", element).html(data.grade);
@@ -445,6 +479,9 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
                         acid: acid,
                         sid: studentId,
                         grade: this.value,
+                        assignmentid: $(
+                            document.getElementById("chaporassignselector")
+                        ).val(),
                     },
                     success: function (data) {
                         inp.style.backgroundColor = "#ddffdd";
@@ -464,6 +501,9 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
                         acid: acid,
                         sid: studentId,
                         comment: this.value,
+                        assignmentid: $(
+                            document.getElementById("chaporassignselector")
+                        ).val(),
                     },
                     success: function (data) {
                         inp.style.backgroundColor = "#ddffdd";
@@ -513,7 +553,10 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
             var obj = new XMLHttpRequest();
             obj.open(
                 "GET",
-                "/runestone/admin/getGradeComments?acid=" + acid + "&sid=" + encodeURIComponent(studentId),
+                "/runestone/admin/getGradeComments?acid=" +
+                    acid +
+                    "&sid=" +
+                    encodeURIComponent(studentId),
                 true
             );
             obj.send(
@@ -780,6 +823,25 @@ function selectChapOrAssignment() {
         pickedChapters("chaporassignselector");
     }
 
+    // TODO: After collecting data from the logs we can decide whether to keep
+    // the chapter selection.
+    let data = {
+        event: "grading",
+        act: val,
+        div_id: "chooseChapOrAssign",
+        course_name: eBookConfig.course,
+    };
+    let jsheaders = new Headers({
+        "Content-type": "application/json; charset=utf-8",
+        Accept: "application/json",
+    });
+    let request = new Request("/ns/logger/bookevent", {
+        method: "POST",
+        headers: jsheaders,
+        body: JSON.stringify(data),
+    });
+    fetch(request);
+
     displayDefaultQuestion("questionselector");
     pickedStudents("studentselector");
 }
@@ -907,6 +969,21 @@ function remove_instructor() {
             }
         }
     };
+}
+
+function TA_search() {
+    var elements = document.getElementsByClassName("available_students");
+    for (var i = 0; i < elements.length; i++) {
+        var name = elements[i].innerText.toUpperCase();
+        var text = $("#TA_search").val();
+        if (name.includes(text.toUpperCase())) {
+            elements[i].style.display = "block";
+            elements[i].disabled = false;
+        } else {
+            elements[i].style.display = "none";
+            elements[i].disabled = true;
+        }
+    }
 }
 
 function edit_indexrst(form) {
@@ -1294,7 +1371,7 @@ function update_assignment(form) {
         }
     }
     if (form.is_peer.checked && form.is_timed.checked) {
-        alert("An assignment can not have both Timed and Peer checked")
+        alert("An assignment can not have both Timed and Peer checked");
         return;
     }
     if (form.visible.checked) {
@@ -1327,12 +1404,17 @@ function update_assignment(form) {
     } else {
         data.is_peer = "F";
     }
+    if (form.peer_async_visible.checked) {
+        data.peer_async_visible = "T"
+    } else {
+        data.peer_async_visible = "F"
+    }
     data.timelimit = form.timelimit.value;
     data.description = form.description.value;
     data.assignment_id = getAssignmentId();
     $.getJSON("save_assignment", data, function (result) {
         alert("Assignment Saved");
-    }).error(function () {
+    }).fail(function () {
         alert("huh??");
     });
 }
@@ -1389,6 +1471,7 @@ function assignmentInfo() {
             $("#nopause").val(assignmentData.nopause);
             $("#nofeedback").val(assignmentData.nofeedback);
             $("#assign_is_peer").val(assignmentData.is_peer);
+            $("#peer_async_visible").val(assignmentData.peer_async_visible);
             if (assignmentData.visible === true) {
                 $("#assign_visible").prop("checked", true);
             } else {
@@ -1413,6 +1496,11 @@ function assignmentInfo() {
                 $("#assign_is_peer").prop("checked", true);
             } else {
                 $("#assign_is_peer").prop("checked", false);
+            }
+            if (assignmentData.peer_async_visible === true) {
+                $("#peer_async_visible").prop("checked", true);
+            } else {
+                $("#peer_async_visible").prop("checked", false);
             }
             if (assignmentData.is_timed === true) {
                 $("#assign_is_timed").prop("checked", true);
@@ -1603,9 +1691,9 @@ function remove_question(question_name) {
     var assignment_id = getAssignmentId();
     $.getJSON(
         "delete_assignment_question/?name=" +
-        question_name +
-        "&assignment_id=" +
-        assignment_id,
+            question_name +
+            "&assignment_id=" +
+            assignment_id,
         {
             variable: "variable",
         }
@@ -1719,22 +1807,19 @@ function create_question(formdata) {
                     "Name is already in use. Please try a different name.";
             } else {
                 alert("Question created successfully");
+                appendToQuestionTable(
+                    name,
+                    points,
+                    "pct_correct",
+                    ["manual", "all_or_nothing", "pct_correct", "interact"],
+                    "best_answer",
+                    ["first_answer", "last_answer", "best_answer"]
+                );
+
                 var newPoints = iserror.points;
                 var q_type = activetab;
                 var totalPoints = document.getElementById("totalPoints");
                 totalPoints.innerHTML = "Total points: " + newPoints;
-                // Add this question to the question picker and the table.
-                var tqp = question_picker.jstree(true);
-                // Find the exercises for this chapter. They have an ID set, making them easy to find.
-                chapter = chapterMap[chapter];
-                var exercises_node = tqp.get_node(chapter + " Exercises");
-                // See https://www.jstree.com/api/#/?f=create_node([par, node, pos, callback, is_loaded]).
-                tqp.check_node(
-                    tqp.create_node(exercises_node, {
-                        id: name,
-                        text: name,
-                    })
-                );
             }
         },
         "json"
@@ -1742,6 +1827,8 @@ function create_question(formdata) {
 }
 
 // Given a question ID, preview it.
+// This is NOT the function used to generate the grading panel on the grades page
+// this is used in other places.
 function preview_question_id(question_id, preview_div, sid, gradeit) {
     if (arguments.length == 1) {
         preview_div = "component-preview";
@@ -1749,7 +1836,8 @@ function preview_question_id(question_id, preview_div, sid, gradeit) {
     // Request the preview HTML from the server.
     $.getJSON("/runestone/admin/htmlsrc", {
         acid: question_id,
-    }).done(function (html_src) {
+    }).done(function (jsonData) {
+        html_src = jsonData.htmlsrc
         // Render it.
         data = { acid: question_id };
         if (sid) {
@@ -1769,6 +1857,8 @@ function renderGradingComponents(sid, divid) {
     let div = document.createElement("div");
     let grade = document.createElement("input");
     let gradelabel = document.createElement("label");
+    let url = new URL(window.location.href);
+    let assignmentid = url.searchParams.get("assignment_id");
     gradelabel.for = "grade-input";
     $(gradelabel).text("Grade");
     grade.type = "text";
@@ -1790,6 +1880,7 @@ function renderGradingComponents(sid, divid) {
             type: "POST",
             dataType: "JSON",
             data: {
+                assignmentid: assignmentid,
                 acid: divid,
                 sid: sid,
                 grade: $(grade).val(),
@@ -1798,6 +1889,7 @@ function renderGradingComponents(sid, divid) {
             success: function (data) {
                 $(grade).css("background", "lightgreen");
                 $(comment).css("background", "lightgreen");
+                window.location.reload(true);
             },
         });
     });
@@ -1838,11 +1930,18 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
      *  source into the actual component.
      */
     if (!componentSrc) {
-        jQuery(`#${whereDiv}`).html(`<p>Sorry, no source is available for preview or grading</p>`);
+        jQuery(`#${whereDiv}`).html(
+            `<p>Sorry, no source is available for preview or grading</p>`
+        );
         return;
     }
     if (typeof moreOpts === "undefined") {
         moreOpts = {};
+    }
+    var author = null;
+    if ("author" in moreOpts) {
+        author = moreOpts.author;
+        delete moreOpts.author;
     }
     patt = /..\/_images/g;
     componentSrc = componentSrc.replace(
@@ -1856,6 +1955,12 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
     }
 
     let componentKind = $($(`#${whereDiv} [data-component]`)[0]).data("component");
+    // webwork problems do not have a data-component attribute so we have to try to figure it out.
+    //
+    if (! componentKind &&
+        (componentSrc.indexOf("handleWW") >= 0) || (componentSrc.indexOf("webwork") >= 0)) {
+        componentKind = "webwork";
+    }
     // Import all the js needed for this component before rendering
     await runestoneComponents.runestone_import(componentKind);
     let opt = {};
@@ -1876,7 +1981,7 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
     }
 
     if (typeof component_factory === "undefined") {
-        alert("Error:  Missing the component factory!  Clear you browser cache.");
+        alert("Error:  Missing the component factory!  Clear your browser cache.");
     } else {
         if (!component_factory[componentKind] && !jQuery(`#${whereDiv}`).html()) {
             jQuery(`#${whereDiv}`).html(
@@ -1904,6 +2009,11 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
                 "orig_divid",
                 opt.acid || moreOpts.acid || opt.orig.id
             ); // save the original divid
+            if (author) {
+                let authorInfo = document.createElement("p");
+                authorInfo.innerHTML = `Written by: ${author}`
+                $(`#${whereDiv}`).append(authorInfo);
+            }
             let editButton = document.createElement("button");
             let constrainbc = document.getElementById("qbankform").constrainbc.checked;
             $(editButton).text("Edit Question");
@@ -1962,7 +2072,7 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
         }
         // $(`#${whereDiv}`).css("background-color", "white");
     }
-    MathJax.Hub.Queue(["Typeset", MathJax.Hub]);
+    MathJax.typeset([document.querySelector(`#${whereDiv}`)])
 }
 
 // Called by the "Search" button in the "Search question bank" panel.
@@ -1979,6 +2089,7 @@ function questionBank(form) {
     var cbc = form.constrainbc.checked;
     var obj = new XMLHttpRequest();
     var url = "/runestone/admin/questionBank";
+    var qlanguage = form.language.value;
     var data = {
         variable: "variable",
         chapter: chapter,
@@ -1990,6 +2101,7 @@ function questionBank(form) {
         term: term,
         competency: competency,
         isprim: isprim,
+        language: qlanguage,
     };
     jQuery.post(url, data, function (resp, textStatus, whatever) {
         if (resp == "Error") {
@@ -2076,6 +2188,7 @@ function getQuestionInfo() {
 
         await renderRunestoneComponent(data.htmlsrc, "component-preview", {
             acid: question_name,
+            author: data.author,
         });
 
         var q_author = document.getElementById("q_author");

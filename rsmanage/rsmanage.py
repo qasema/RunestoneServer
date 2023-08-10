@@ -1,3 +1,19 @@
+import sys
+from pathlib import Path
+
+
+# Launch into the Docker container before attempting imports that are only installed there. (If Docker isn't installed, we assume the current venv already contains the necessary packages.)
+wd = (Path(__file__).parents[1]).resolve()
+sys.path.extend([str(wd / "docker"), str(wd / "tests")])
+try:
+    # Assume that a development version of the Runestone Server -- meaning the presence of `../docker/docker_tools_misc.py` -- implies Docker.
+    from docker_tools_misc import ensure_in_docker, in_docker
+
+    ensure_in_docker(True)
+except ModuleNotFoundError:
+    pass
+
+import asyncio
 import click
 import csv
 import json
@@ -6,10 +22,20 @@ import re
 import shutil
 import signal
 import subprocess
+import redis
+import xml.etree.ElementTree as ET
+from xml.etree import ElementInclude
+
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
+from pgcli.main import cli as clipg
 from psycopg2.errors import UniqueViolation
-import sys
+
+from bookserver.crud import create_initial_courses_users
+from bookserver.db import init_models, term_models
+from bookserver.config import settings
+from runestone.pretext.chapter_pop import manifest_data_to_db
+from runestone.server.utils import _build_runestone_book, _build_ptx_book
 
 
 class Config(object):
@@ -27,7 +53,7 @@ APP_PATH = "applications/{}".format(APP)
 DBSDIR = "{}/databases".format(APP_PATH)
 BUILDDIR = "{}/build".format(APP_PATH)
 PRIVATEDIR = "{}/private".format(APP_PATH)
-CUSTOMDIR = "{}/custom_courses".format(APP_PATH)
+BOOKSDIR = f"{APP_PATH}/books"
 
 
 @click.group(chain=True)
@@ -58,12 +84,16 @@ def cli(config, verbose, if_clean):
     config.conf = conf
     config.dbname = re.match(r"postgres.*//.*?@.*?/(.*)", config.dburl).group(1)
     config.dbhost = re.match(r"postgres.*//.*?@(.*?)/(.*)", config.dburl).group(1)
-    if conf  != "production":
-        config.dbuser = re.match(r"postgres.*//(.*?)(:.*?)?@(.*?)/(.*)", config.dburl).group(1)
+    if conf != "production":
+        config.dbuser = re.match(
+            r"postgres.*//(.*?)(:.*?)?@(.*?)/(.*)", config.dburl
+        ).group(1)
     else:
-        config.dbuser = re.match(r"postgres.*//(.*?):(.*?)@(.*?)/(.*)", config.dburl).group(1)
+        config.dbuser = re.match(
+            r"postgres.*//(.*?):(.*?)@(.*?)/(.*)", config.dburl
+        ).group(1)
 
-
+    config.dbpass = os.environ.get("POSTGRES_PASSWORD")
     if verbose:
         echoEnviron(config)
 
@@ -74,6 +104,29 @@ def cli(config, verbose, if_clean):
             sys.exit()
 
     config.verbose = verbose
+
+
+def _initdb(config):
+    # Because click won't natively support making commands async we can use this simple method
+    # to call async functions.
+    # Since we successfully dropped the database we need to initialize it here.
+    async def async_funcs():
+        await init_models()
+        await create_initial_courses_users()
+        await term_models()
+
+    asyncio.run(async_funcs())
+
+    os.environ["WEB2PY_MIGRATE"] = "Yes"
+    subprocess.call(
+        f"{sys.executable} web2py.py -S runestone -M -R applications/runestone/rsmanage/noop.py",
+        shell=True,
+    )
+
+    eng = create_engine(config.dburl)
+    eng.execute("""insert into auth_group (role) values ('instructor')""")
+    eng.execute("""insert into auth_group (role) values ('editor')""")
+    eng.execute("""insert into auth_group (role) values ('author')""")
 
 
 #
@@ -96,10 +149,6 @@ def initdb(config, list_tables, reset, fake, force):
         click.echo("Making databases folder")
         os.mkdir(DBSDIR)
 
-    if not os.path.exists(PRIVATEDIR):
-        click.echo("Making private directory for auth")
-        os.mkdir(PRIVATEDIR)
-
     if reset:
         if not force:
             click.confirm(
@@ -110,20 +159,16 @@ def initdb(config, list_tables, reset, fake, force):
                 show_default=True,
                 err=False,
             )
+        # If PGPASSWORD is not set in the environment then it will prompt for password
         res = subprocess.call(
-            "dropdb --if-exists --host={} --username={} {}".format(
-                config.dbhost, config.dbuser, config.dbname
-            ),
+            f"dropdb --if-exists --force --host={config.dbhost} --username={config.dbuser} {config.dbname}",
             shell=True,
         )
-        if res == 0:
-            res = subprocess.call(
-                "createdb --echo --host={} --username={} {}".format(
-                    config.dbhost, config.dbuser, config.dbname
-                ),
-                shell=True,
-            )
-        else:
+        res = subprocess.call(
+            f"createdb --host={config.dbhost} --username={config.dbuser} --owner={config.dbuser} {config.dbname}",
+            shell=True,
+        )
+        if res != 0:
             click.echo("Failed to drop the database do you have permission?")
             sys.exit(1)
 
@@ -137,10 +182,17 @@ def initdb(config, list_tables, reset, fake, force):
                 if os.path.isfile(file_path) and file_path.startswith(
                     os.path.join(DBSDIR, table_migrate_prefix)
                 ):
-                    print("removing ", file_path)
+                    print(f"removing {file_path}")
                     os.unlink(file_path)
             except Exception as e:
                 print(e)
+
+        # Because click won't natively support making commands async we can use this simple method
+        # to call async functions.
+        # Since we successfully dropped the database we need to initialize it here.
+        settings.drop_tables = "Yes"
+        _initdb(config)
+        click.echo("Created new tables")
 
     if len(os.listdir("{}/databases".format(APP_PATH))) > 1 and not fake and not force:
         click.confirm(
@@ -156,18 +208,8 @@ def initdb(config, list_tables, reset, fake, force):
         message="Initializing the database", file=None, nl=True, err=False, color=None
     )
 
-    if fake:
-        os.environ["WEB2PY_MIGRATE"] = "fake"
-
-    list_tables = "-A --list_tables" if config.verbose or list_tables else ""
-    cmd = "{} web2py.py --no-banner -S {} -M -R {}/rsmanage/initialize_tables.py {}".format(
-        sys.executable, APP, APP_PATH, list_tables
-    )
-    click.echo("Running: {}".format(cmd))
-    res = subprocess.call(cmd, shell=True)
-
-    if res != 0:
-        click.echo(message="Database Initialization Failed")
+    if not reset:
+        _initdb(config)
 
 
 @cli.command()
@@ -189,50 +231,6 @@ def migrate(config, fake):
 
 
 #
-#    run
-#
-
-
-@cli.command()
-@click.option(
-    "--with-scheduler", is_flag=True, help="Star the background task scheduler too"
-)
-@pass_config
-def run(config, with_scheduler):
-    """Starts up the runestone server and optionally scheduler"""
-    os.chdir(findProjectRoot())
-    _ = subprocess.Popen(
-        f"{sys.executable} -u web2py.py --ip=0.0.0.0 --port=8000 --password='<recycle>' -d rs.pid -K runestone --nogui -X",
-        shell=True,
-    )
-
-
-#
-#    shutdown
-#
-
-
-@cli.command()
-@pass_config
-def shutdown(config):
-    """Shutdown the server and any schedulers"""
-    os.chdir(findProjectRoot())
-    with open("rs.pid", "r") as pfile:
-        pid = int(pfile.read())
-
-    click.echo("killing process {}".format(pid))
-    os.kill(pid, signal.SIGINT)
-
-    # select worker_name from scheduler_worker;
-    # iterate over results to kill all schedulers
-    eng = create_engine(config.dburl)
-    res = eng.execute("select worker_name from scheduler_worker")
-    for row in res:
-        # result will be form of hostname#pid
-        os.kill(int(row[0].split("#")[1]), signal.SIGINT)
-
-
-#
 #    addcourse
 #
 
@@ -243,18 +241,21 @@ def shutdown(config):
 @click.option(
     "--start-date", default="2001-01-01", help="Start Date for the course in YYYY-MM-DD"
 )
-@click.option("--python3", is_flag=True, default=True, help="Use python3 style syntax")
+@click.option("--python3/--no-python3", default=True, help="Use python3 style syntax")
 @click.option(
-    "--login-required",
-    is_flag=True,
+    "--login-required/--no-login-required",
     help="Only registered users can access this course?",
 )
 @click.option("--institution", help="Your institution")
+@click.option("--courselevel", help="Your course level", default="unknown")
+@click.option("--allowdownloads", help="enable download button", default="F")
 @click.option("--language", default="python", help="Default Language for your course")
 @click.option("--host", default="runestone.academy", help="runestone server host name")
 @click.option(
-    "--allow_pairs",
-    is_flag=True,
+    "--newserver/--no-newserver", default=True, help="use the new book server"
+)
+@click.option(
+    "--allow_pairs/--no-allow-pairs",
     default=False,
     help="enable experimental pair programming support",
 )
@@ -267,8 +268,11 @@ def addcourse(
     python3,
     login_required,
     institution,
+    courselevel,
+    allowdownloads,
     language,
     host,
+    newserver,
     allow_pairs,
 ):
     """Create a course in the database"""
@@ -295,6 +299,7 @@ def addcourse(
             start_date = click.prompt("Start Date YYYY-MM-DD")
         if not institution and not use_defaults:
             institution = click.prompt("Your institution")
+        # TODO: these prompts make no sense -- only ask for them if the option was False??? Looks like a copy-and-paste error.
         if not login_required and not use_defaults:
             login_required = (
                 "T" if click.confirm("Require users to log in", default="T") else "F"
@@ -325,17 +330,19 @@ def addcourse(
             )
 
     eng.execute(
-        """insert into courses (course_name, base_course, python3, term_start_date, login_required, institution, allow_pairs)
-                values ('{}', '{}', '{}', '{}', '{}', '{}', '{}')
-                """.format(
-            course_name,
-            basecourse,
-            python3,
-            start_date,
-            login_required,
-            institution,
-            allow_pairs,
-        )
+        f"""insert into courses
+           (course_name, base_course, python3, term_start_date, login_required, institution, courselevel, downloads_enabled, allow_pairs, new_server)
+                values ('{course_name}',
+                '{basecourse}',
+                '{python3}',
+                '{start_date}',
+                '{login_required}',
+                '{institution}',
+                '{courselevel}',
+                '{allowdownloads}',
+                '{allow_pairs}',
+                '{"T" if newserver else "F"}')
+                """
     )
 
     click.echo("Course added to DB successfully")
@@ -347,16 +354,19 @@ def addcourse(
 
 
 @cli.command()
+@click.option("--clone", default=None, help="clone the given repo before building")
+@click.option("--ptx", is_flag=True, help="Build a PreTeXt book")
 @click.option(
-    "--course", help="The name of a course that should already exist in the DB"
+    "--gen", is_flag=True, help="Build PreTeXt generated assets (a one time thing)"
 )
-@click.option("--repo", help="URL to a git repository with the book to build")
-@click.option(
-    "--skipclone", is_flag=True, help="avoid recloning when directory is already there"
-)
+@click.option("--manifest", default="runestone-manifest.xml", help="Manifest file")
+@click.argument("course", nargs=1)
 @pass_config
-def build(config, course, repo, skipclone):
-    """Build the book for an existing course"""
+def build(config, clone, ptx, gen, manifest, course):
+    """
+    rsmanage build [options] COURSE
+    Build the book for an existing course
+    """
     os.chdir(findProjectRoot())  # change to a known location
     eng = create_engine(config.dburl)
     res = eng.execute(
@@ -371,78 +381,36 @@ def build(config, course, repo, skipclone):
         )
         exit(1)
 
-    os.chdir(BUILDDIR)
-    if not skipclone:
-        res = subprocess.call("git clone {}".format(repo), shell=True)
-        if res != 0:
-            click.echo(
-                "Cloning the repository failed, please check the URL and try again"
-            )
-            exit(1)
-
-    proj_dir = os.path.basename(repo).replace(".git", "")
-    click.echo("Switching to project dir {}".format(proj_dir))
-    os.chdir(proj_dir)
-    paver_file = os.path.join("..", "..", "custom_courses", course, "pavement.py")
-    click.echo("Checking for pavement {}".format(paver_file))
-    if os.path.exists(paver_file):
-        shutil.copy(paver_file, "pavement.py")
-    else:
-        cont = click.confirm("WARNING -- NOT USING CUSTOM PAVEMENT FILE - continue")
-        if not cont:
-            sys.exit()
-
-    try:
-        if os.path.exists("pavement.py"):
-            sys.path.insert(0, os.getcwd())
-            from pavement import options, dest
+    os.chdir(BOOKSDIR)
+    if clone:
+        if os.path.exists(course):
+            click.echo("Book repo already cloned, skipping")
         else:
-            click.echo(
-                "I can't find a pavement.py file in {} you need that to build".format(
-                    os.getcwd()
+            res = subprocess.call("git clone {}".format(clone), shell=True)
+            if res != 0:
+                click.echo(
+                    "Cloning the repository failed, please check the URL and try again"
                 )
-            )
-            exit(1)
-    except ImportError as e:
-        click.echo("You do not appear to have a good pavement.py file.")
-        print(e)
-        exit(1)
+                exit(1)
 
-    if options.project_name != course:
-        click.echo(
-            "Error: {} and {} do not match.  Your course name needs to match the project_name in pavement.py".format(
-                course, project_name
-            )
-        )
-        exit(1)
+    # proj_dir = os.path.basename(repo).replace(".git", "")
+    click.echo("Switching to book dir {}".format(course))
+    os.chdir(course)
+    if ptx:
+        res = _build_ptx_book(config, gen, manifest, course)
 
-    res = subprocess.call("runestone build --all", shell=True)
-    if res != 0:
-        click.echo("building the book failed, check the log for errors and try again")
-        exit(1)
-    click.echo("Build succeedeed... Now deploying to static")
-    if dest != "../../static":
-        click.echo(
-            "Incorrect deployment directory.  dest should be ../../static in pavement.py"
-        )
-        exit(1)
-
-    res = subprocess.call("runestone deploy", shell=True)
-    if res == 0:
-        click.echo("Success! Book deployed")
     else:
-        click.echo("Deploy failed, check the log to see what went wrong.")
+        res = _build_runestone_book(config, course)
 
-    click.echo("Cleaning up")
-    os.chdir("..")
-    subprocess.call("rm -rf {}".format(proj_dir), shell=True)
+    if res:
+        click.echo("Build Succeeded")
+    else:
+        click.echo("Build Failed, see cli.log for details")
 
 
 #
-#    inituser
+#    adduser
 #
-
-
 @cli.command()
 @click.option("--instructor", is_flag=True, help="Make this user an instructor")
 @click.option(
@@ -463,7 +431,7 @@ def build(config, course, repo, skipclone):
     help="ignore duplicate student errors and keep processing",
 )
 @pass_config
-def inituser(
+def adduser(
     config,
     instructor,
     fromfile,
@@ -490,7 +458,7 @@ def inituser(
         for line in csv.reader(fromfile):
             if len(line) != 6:
                 click.echo("Not enough data to create a user.  Lines must be")
-                click.echo("username, email first_name, last_name, password, course")
+                click.echo("username, email, first_name, last_name, password, course")
                 exit(1)
             if "@" not in line[1]:
                 click.echo("emails should have an @ in them in column 2")
@@ -847,6 +815,43 @@ def courseinfo(config, name):
 
 
 @cli.command()
+@click.option("--student", default=None, help="Name of the student")
+@pass_config
+def studentinfo(config, student):
+    """
+    display PII and all courses enrolled for a username
+    """
+    eng = create_engine(config.dburl)
+
+    if not student:
+        student = click.prompt("Student Id: ")
+
+    res = eng.execute(
+        ## Index  0             1           2         3            4               5                6
+        f"""
+        select auth_user.id, first_name, last_name, email, courses.course_name, courses.id, payments.charge_id
+        from auth_user
+        join user_courses on user_courses.user_id = auth_user.id
+        full outer join payments on user_courses.id = payments.user_courses_id
+        join courses on courses.id = user_courses.course_id where username = '{student}'"""
+    )
+    # fetchone fetches the first row without closing the cursor.
+    first = res.fetchone()
+    if first:
+        print("id\tFirst\tLast\temail")
+        print("\t".join(str(x) for x in first[:4]))
+        print("")
+        print("Course                                     cid")
+        print("----------------------------------- ----------")
+        print(f"{first[4].ljust(35)} {str(first[5]).rjust(10)} {first[6] if first[6] is not None else ''}")
+        for row in res:
+            print(f"{row[4].ljust(35)} {str(row[5]).rjust(10)} {row[6] if row[6] is not None else ''}")
+        print("\n")
+    else:
+        print("Student not found.")
+
+
+@cli.command()
 @click.option("--course", default=None, help="Name of the course")
 @click.option("--attr", default=None, help="Attribute to add")
 @click.option("--value", default=None, help="Attribute Value")
@@ -976,6 +981,17 @@ where courses.course_name = %s order by last_name
         print("No instructors found for {}".format(course))
 
 
+@cli.command()
+@pass_config
+def db(config):
+    """
+    Connect to the database based on the current configuration
+    """
+    # replace argv[1] which is 'db' with the url to connect to
+    sys.argv[1] = config.dburl
+    sys.exit(clipg())
+
+
 #
 # Utility Functions Below here
 #
@@ -1025,6 +1041,9 @@ def findProjectRoot():
             return start
         prevdir = start
         start = os.path.dirname(start)
+    if in_docker():
+        return "/srv/web2py"
+
     raise IOError("You must be in a web2py application to run rsmanage")
 
 
@@ -1050,6 +1069,114 @@ def check_db_for_useinfo(config):
     res = eng.execute("select count(*) from pg_class where relname = 'useinfo'")
     count = res.first()[0]
     return count
+
+
+@cli.command()
+@click.option("--course", help="name of course")
+def peergroups(course):
+    r = redis.from_url(os.environ.get("REDIS_URI", "redis://redis:6379/0"))
+    ap = r.hgetall(f"partnerdb_{course}")
+    if len(ap) > 0:
+        for x in ap.items():
+            click.echo(x)
+    else:
+        click.echo(f"No Peer Groups found for {course}")
+
+
+def is_author(config, userid):
+    engine = create_engine(config.dburl)
+    ed = engine.execute(
+        """select id from auth_group where auth_group.role = 'author'"""
+    ).first()
+
+    row = engine.execute(
+        f"""select * from auth_membership where user_id = {userid} and group_id = {ed.id}"""
+    ).first()
+
+    if row:
+        return True
+    else:
+        return False
+
+
+@cli.command()
+@click.option("--book", help="document-id or basecourse")
+@click.option("--author", help="username")
+@click.option("--github", help="url of book on github", default="")
+@pass_config
+def addbookauthor(config, book, author, github):
+    book = book or click.prompt("document-id or basecourse ")
+    author = author or click.prompt("username of author ")
+    engine = create_engine(config.dburl)
+    a_row = engine.execute(
+        f"""select * from auth_user where username = '{author}'"""
+    ).first()
+    if not a_row:
+        click.echo(f"Error - author {author} does not exist")
+        sys.exit(-1)
+    res = engine.execute(
+        f"""select * from courses where course_name = '{book}' and base_course='{book}'"""
+    ).first()
+    if res:
+        click.echo(f"Warning - Book {book} already exists in courses table")
+    # Create an entry in courses (course_name, term_start_date, institution, base_course, login_required, allow_pairs, student_price, downloads_enabled, courselevel, newserver)
+    if not res:
+        res = engine.execute(
+            f"""insert into courses
+            (course_name, base_course, python3, term_start_date, login_required, institution, courselevel, downloads_enabled, allow_pairs, new_server)
+                values ('{book}',
+                '{book}',
+                'T',
+                '2022-01-01',
+                'F',
+                'Runestone',
+                '',
+                'F',
+                'F',
+                'T')
+                """
+        )
+    else:
+        # Try to deduce the github url from the working directory
+        if not github:
+            github = f"https://github.com/RunestoneInteractive/{book}.git"
+
+    # create an entry in book_author (author, book)
+    try:
+        res = engine.execute(
+            f"""
+            insert into library
+            (title, basecourse)
+            values ( 'Temporary title for {book}', '{book}' )
+            """
+        )
+    except Exception as e:
+        click.echo(f"Warning Book already exists in library {e}")
+
+    try:
+        res = engine.execute(
+            f"""insert into book_author
+                (author, book)
+                values ( '{author}', '{book}' )
+            """
+        )
+    except Exception as e:
+        click.echo(f"Warning setting book,author pair failed {e}")
+
+    # create an entry in auth_membership (group_id, user_id)
+    auth_row = engine.execute(
+        """select * from auth_group where role = 'author'"""
+    ).first()
+    auth_group_id = auth_row[0]
+
+    if not is_author(config, a_row.id):
+        res = engine.execute(
+            f"""
+            insert into auth_membership
+            (group_id, user_id)
+            values ({auth_group_id}, {a_row[0]})
+            """
+        )
 
 
 if __name__ == "__main__":

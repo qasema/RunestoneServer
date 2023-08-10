@@ -10,7 +10,6 @@ import subprocess
 
 from gluon.restricted import RestrictedError
 from stripe_form import StripeForm
-import jwt
 
 logger = logging.getLogger(settings.logger)
 logger.setLevel(settings.log_level)
@@ -22,11 +21,18 @@ def user():
     if not request.args(0):
         redirect(URL("default", "user/login"))
 
+    library_list = []
     if "register" in request.args(0):
         # If we can't pre-populate, just set it to blank.
         # This will force the user to choose a valid course name
         db.auth_user.course_id.default = ""
-
+        library_list = db.executesql(
+            """select basecourse, title
+               from library
+               where for_classes = 'T' and is_visible = 'T'
+               order by shelf_section, basecourse""",
+            as_dict=True,
+        )
         # Otherwise, use the referer URL to try to pre-populate
         ref = request.env.http_referer
         if ref:
@@ -86,7 +92,7 @@ def user():
         TypeError,
     ):  # not all auth methods actually have a submit button (e.g. user/not_authorized)
         pass
-    return dict(form=form)
+    return dict(form=form, library=library_list)
 
 
 # Can use db.auth_user._after_insert.append(make_section_entries)
@@ -193,15 +199,7 @@ def index():
     else:
         # At this point the user has logged in
         # add a jwt cookie for compatibility with bookserver
-        token = _create_access_token(
-            {"sub": auth.user.username}, expires=datetime.timedelta(days=30)
-        )
-        # set cookie
-        if token:
-            response.cookies["access_token"] = token
-            response.cookies["access_token"]["expires"] = 24 * 3600 * 30
-            response.cookies["access_token"]["path"] = "/"
-
+        create_rs_token()
         # check to see if there is an entry in user_courses for
         # this user,course configuration
         in_db = db(
@@ -298,6 +296,10 @@ def ack():
     return dict()
 
 
+def start():
+    return dict()
+
+
 @auth.requires_login()
 def bio():
     existing_record = db(db.user_biography.user_id == auth.user.id).select().first()
@@ -367,6 +369,15 @@ def bios():
 
 @auth.requires_login()
 def courses():
+    if "access_token" not in request.cookies:
+        # The user is only partially logged in.
+        logger.error(f"Missing Access Token: {auth.user.username} adding one Now")
+        create_rs_token()
+
+    if request.vars.requested_course:
+        # We have a mismatch between the requested course and the current course
+        # in the database
+        response.flash = f"You requested {request.vars.requested_course} but are logged in to {request.vars.current_course}"
     res = db(db.user_courses.user_id == auth.user.id).select(
         db.user_courses.course_id, orderby=~db.user_courses.id
     )
@@ -594,6 +605,10 @@ def wisp():
     return dict(wisp={})
 
 
+def ads():
+    return dict(wisp={})
+
+
 def ct_addendum():
     return dict(private={})
 
@@ -611,6 +626,13 @@ def donate():
     else:
         amt = None
     return dict(donate=amt)
+
+
+def accessIssue():
+    if auth.user:
+        return dict(access={})
+    else:
+        return redirect(URL("default", "user/login"))
 
 
 @auth.requires_login()
@@ -639,51 +661,27 @@ def delete():
         redirect(URL("default", "user/profile"))
 
 
-# This function is basically copied from the fastapi_login plugin
-# see `their github repo <https://github.com/MushroomMaula/fastapi_login>`_
-#
-def _create_access_token(data: dict, expires=None, scopes=None) -> bytes:
-    """
-    Helper function to create the encoded access token using
-    the provided secret and the algorithm of the LoginManager instance
+@auth.requires_login()
+def enroll():
+    logger.debug(f"Request to login for {request.vars.course_name}")
+    course = db(db.courses.course_name == request.vars.course_name).select().first()
+    # is the user already registered for this course?
+    res = (
+        db(
+            (db.user_courses.course_id == course.id)
+            & (db.user_courses.user_id == auth.user.id)
+        )
+        .select()
+        .first()
+    )
+    if res:
+        session.flash = f"You are already registered for {request.vars.course_name}"
+        redirect(URL("default", "courses"))
 
-    Args:
-        data (dict): The data which should be stored in the token
-        expires (datetime.timedelta):  An optional timedelta in which the token expires.
-            Defaults to 15 minutes
-        scopes (Collection): Optional scopes the token user has access to.
+    db.user_courses.insert(user_id=auth.user.id, course_id=course.id)
+    db(db.auth_user.id == auth.user.id).update(course_id=course.id, active="T")
+    db(db.auth_user.id == auth.user.id).update(course_name=request.vars.course_name)
+    auth.user.update(course_name=request.course_name)
+    auth.user.update(course_id=course.id)
 
-    Returns:
-        The encoded JWT with the data and the expiry. The expiry is
-        available under the 'exp' key
-    """
-
-    to_encode = data.copy()
-
-    if expires:
-        expires_in = datetime.datetime.utcnow() + expires
-    else:
-        # default to 15 minutes expiry times
-        expires_in = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
-
-    to_encode.update({"exp": expires_in})
-
-    if scopes is not None:
-        unique_scopes = set(scopes)
-        to_encode.update({"scopes": list(unique_scopes)})
-
-    algorithm = "HS256"  # normally set in constructor
-
-    # the secret key value should be set in 1.py as part of the
-    # web2py installation.
-    secret = settings.secret
-
-    try:
-        encoded_jwt = jwt.encode(to_encode, secret, algorithm)
-    except:
-        logger.error(f"failed to create a JWT Token for {to_encode}")
-        if not secret:
-            logger.error("Please set a secret key value in models/1.py")
-        encoded_jwt = None
-    # decode here decodes the byte str to a normal str not the token
-    return encoded_jwt
+    redirect(URL("default", "donate"))

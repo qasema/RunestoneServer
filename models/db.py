@@ -1,6 +1,8 @@
 # *************************************
 # |docname| - Core tables and functions
 # *************************************
+import datetime
+import jwt
 import os
 import random
 import re
@@ -52,17 +54,17 @@ if not request.env.web2py_runtime_gae:
             migrate=False,
             pool_size=5,
             adapter_args=dict(logfile="test_runestone_migrate.log"),
+            migrate_enabled=(
+                os.environ.get("WEB2PY_MIGRATE", "Yes") in ["Yes", "Fake"]
+            ),
         )
         table_migrate_prefix = "test_runestone_"
-        # For tests, use migration to create tables.
-        def bookserver_owned(table_name):
-            return table_migrate_prefix + table_name + ".table"
 
     else:
         # WEB2PY_MIGRATE is either "Yes", "No", "Fake", or missing
         db = DAL(
             settings.database_uri,
-            pool_size=30,
+            pool_size=10,
             fake_migrate_all=(os.environ.get("WEB2PY_MIGRATE", "Yes") == "Fake"),
             migrate=False,
             migrate_enabled=(
@@ -196,15 +198,12 @@ def get_course_url(*args):
     args = tuple(x for x in args if x != "")
 
     if course:
-        if course.new_server == True:
-            return URL(
-                a=settings.bks,
-                c="books",
-                f="published",
-                args=(course.course_name,) + args,
-            )
-        else:
-            return URL(c="books", f="published", args=(course.base_course,) + args)
+        return URL(
+            a=settings.bks,
+            c="books",
+            f="published",
+            args=(course.course_name,) + args,
+        )
     else:
         return URL(c="default")
 
@@ -213,7 +212,7 @@ def get_course_url(*args):
 
 
 def getCourseNameFromId(courseid):
-    """ used to compute auth.user.course_name field """
+    """used to compute auth.user.course_name field"""
     q = db.courses.id == courseid
     row = db(q).select().first()
     return row.course_name if row else ""
@@ -275,6 +274,20 @@ def verifyInstructorStatus(course, instructor):
 
 def is_editor(userid):
     ed = db(db.auth_group.role == "editor").select(db.auth_group.id).first()
+    row = (
+        db((db.auth_membership.user_id == userid) & (db.auth_membership.group_id == ed))
+        .select()
+        .first()
+    )
+
+    if row:
+        return True
+    else:
+        return False
+
+
+def is_author(userid):
+    ed = db(db.auth_group.role == "author").select(db.auth_group.id).first()
     row = (
         db((db.auth_membership.user_id == userid) & (db.auth_membership.group_id == ed))
         .select()
@@ -497,7 +510,7 @@ auth.messages.reset_password = """<html>
 Hello, <br>
 
 <p>If you click on <a href="%(link)s">this link</a> you will reset your password.  Sometimes schools have software that tries to sanitize the previous link and makes it useless.</p>
-
+<p>If you get a 404 try changing the http to https in the link provided.</p>
 <p>If you have any trouble with the link you can also ask your instructor
 and they can help you retrieve your username or reset your password.  If you are
 an instructor, you can  (as a last resort) contact Runestone by creating an issue
@@ -542,7 +555,7 @@ def admin_logger(logger):
             course = auth.user.course_name
         else:
             sid = "Anonymous"
-            course = "Unknown"
+            course = "boguscourse"
         try:
             db.useinfo.insert(
                 sid=sid,
@@ -553,7 +566,10 @@ def admin_logger(logger):
                 course_id=course,
             )
         except Exception as e:
-            logger.error(f"failed to insert log record for practice: {e}")
+            logger.error(
+                f"failed to insert log record for {request.controller} {request.function}: {e}"
+            )
+            db.rollback()
 
 
 def createUser(username, password, fname, lname, email, course_name, instructor=False):
@@ -604,3 +620,75 @@ def _validateUser(username, password, fname, lname, email, course_name, line):
         errors.append(f"Email address missing @ on line {line}")
 
     return errors
+
+
+def create_rs_token():
+    d = dict(sub=auth.user.username)
+    expires = datetime.timedelta(days=105)
+    _create_access_token(d, expires=expires)
+
+
+# This function is basically copied from the fastapi_login plugin
+# see `their github repo <https://github.com/MushroomMaula/fastapi_login>`_
+#
+def _create_access_token(data: dict, expires=None, scopes=None) -> bytes:
+    """
+    Helper function to create the encoded access token using
+    the provided secret and the algorithm of the LoginManager instance
+
+    Args:
+        data (dict): The data which should be stored in the token
+        expires (datetime.timedelta):  An optional timedelta in which the token expires.
+            Defaults to 15 minutes
+        scopes (Collection): Optional scopes the token user has access to.
+
+    Returns:
+        The encoded JWT with the data and the expiry. The expiry is
+        available under the 'exp' key
+    """
+
+    to_encode = data.copy()
+
+    if expires:
+        expires_in = datetime.datetime.utcnow() + expires
+    else:
+        # default to 105 days expiry times about a semester
+        expires_in = datetime.datetime.utcnow() + datetime.timedelta(days=105)
+
+    to_encode.update({"exp": expires_in})
+
+    if scopes is not None:
+        unique_scopes = set(scopes)
+        to_encode.update({"scopes": list(unique_scopes)})
+
+    algorithm = "HS256"  # normally set in constructor
+
+    # the secret key value should be set in 1.py as part of the
+    # web2py installation.
+    jwt_secret = settings.jwt_secret
+
+    try:
+        encoded_jwt = jwt.encode(to_encode, jwt_secret, algorithm)
+    except Exception as e:
+        logger.error(f"Failed to create a JWT Token for {to_encode}: {e}")
+        if not jwt_secret:
+            logger.error("Please set a secret key value in models/1.py")
+        encoded_jwt = None
+
+    # Added Runestone-only code: set cookie
+    if encoded_jwt:
+        response.cookies["access_token"] = encoded_jwt
+        response.cookies["access_token"]["expires"] = 24 * 3600 * 105  # 15 weeks
+        response.cookies["access_token"]["path"] = "/"
+        if "LOAD_BALANCER_HOST" in os.environ:
+            response.cookies["access_token"]["domain"] = os.environ[
+                "LOAD_BALANCER_HOST"
+            ]
+
+    # decode here decodes the byte str to a normal str not the token
+    return encoded_jwt
+
+
+# This **may** be a workaround for the bad urls in email resets
+if os.environ.get("LOAD_BALANCER_HOST", "") == "runestone.academy":
+    request.env.wsgi_url_scheme = "https"

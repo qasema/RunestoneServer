@@ -9,6 +9,7 @@
 #
 # Standard library
 # ----------------
+import datetime
 import uuid
 import json
 import html
@@ -241,6 +242,7 @@ def index():
                     # TODO: this doesn't work, since the ``course_id``` and ``assignment_id`` aren't saved in this redirect. Therefore, these should be stored (perhaps in ``session``) then used after a user pays / donates.
                     session.lti_url_next = full_uri
                     auth.login_user(user)
+                    create_rs_token()
                     redirect(URL(c="default"))
                 else:
                     # Otherwise, simply create the user.
@@ -249,6 +251,9 @@ def index():
                     )
 
         auth.login_user(user)
+        # At this point the user has logged in
+        # add a jwt cookie for compatibility with bookserver
+        create_rs_token()
 
     if message_type == "ContentItemSelectionRequest":
         return _provide_assignment_list(course_id, consumer)

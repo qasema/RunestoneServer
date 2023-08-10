@@ -50,6 +50,7 @@ node_modules
 !/static/images
 !/static/bootstrap*
 !/static/dashboard*
+!/static/motd.html
 .vscode/*
 *.egg-info/
 *.egg
@@ -68,3 +69,6 @@ _builddoctrees
 .venv
 .nova
 .env
+docker/nginx/sites-available/runestone
+ready.txt
+books/*

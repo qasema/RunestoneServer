@@ -86,10 +86,43 @@ def _score_one_interaction(row, points, autograde):
         return 0
 
 
+def _score_peer_instruction(rows, points, autograde):
+    has_vote1 = 0
+    has_vote2 = 0
+    sent_message = 0
+    for row in rows:
+        if "vote1" in row.act:
+            has_vote1 = 1
+        if "vote2" in row.act:
+            has_vote2 = 1
+        if row.event == "sendmessage":
+            sent_message = 1
+
+    tot = has_vote1 + has_vote2 + sent_message
+    if autograde == "peer_chat":
+        score = tot / 3 * points
+    else:
+        score = min(1.0, tot / 2) * points
+
+    return score
+
+
 def _score_one_parsons(row, points, autograde):
     # row is from parsons_answers
     # Much like mchoice, parsons_answers currently stores a binary correct value
     # So much like in _score_one_mchoice, the next lines can be altered if a pct_correct value is added to parsons_answers
+    if autograde == "pct_correct" and "percent" in row and row.percent is not None:
+        pct_correct = int(round(row.percent * 100))
+    else:
+        if row.correct:
+            pct_correct = 100
+        else:
+            pct_correct = 0
+    return _score_from_pct_correct(pct_correct, points, autograde)
+
+
+def _score_one_microparsons(row, points, autograde):
+    # row is from microparsons_answers
     if autograde == "pct_correct" and "percent" in row and row.percent is not None:
         pct_correct = int(round(row.percent * 100))
     else:
@@ -170,6 +203,18 @@ def _score_one_khanex(row, points, autograde):
     return _score_from_pct_correct(pct_correct, points, autograde)
 
 
+def _score_one_webwork(row, points, autograde):
+    if autograde == "pct_correct" and "percent" in row and row.percent is not None:
+        pct_correct = int(round(row.percent * 100))
+    else:
+        if row.correct:
+            pct_correct = 100
+        else:
+            pct_correct = 0
+
+    return _score_from_pct_correct(pct_correct, points, autograde)
+
+
 def _scorable_mchoice_answers(
     course_name,
     sid,
@@ -243,7 +288,33 @@ def _scorable_useinfos(
         query = query & (db.useinfo.timestamp >= practice_start_time)
         if now:
             query = query & (db.useinfo.timestamp <= now)
-    return db(query).select(db.useinfo.id, db.useinfo.act, orderby=db.useinfo.timestamp)
+    return db(query).select(
+        db.useinfo.id, db.useinfo.event, db.useinfo.act, orderby=db.useinfo.timestamp
+    )
+
+
+def _scorable_webwork_answers(
+    course_name,
+    sid,
+    question_name,
+    points,
+    deadline,
+    practice_start_time=None,
+    db=None,
+    now=None,
+):
+    query = (
+        (db.webwork_answers.course_name == course_name)
+        & (db.webwork_answers.sid == sid)
+        & (db.webwork_answers.div_id == question_name)
+    )
+    if deadline:
+        query = query & (db.webwork_answers.timestamp < deadline)
+    if practice_start_time:
+        query = query & (db.webwork_answers.timestamp >= practice_start_time)
+    if now:
+        query = query & (db.webwork_answers.timestamp <= now)
+    return db(query).select(orderby=db.webwork_answers.timestamp)
 
 
 def _scorable_parsons_answers(
@@ -268,6 +339,30 @@ def _scorable_parsons_answers(
         if now:
             query = query & (db.parsons_answers.timestamp <= now)
     return db(query).select(orderby=db.parsons_answers.timestamp)
+
+
+def _scorable_microparsons_answers(
+    course_name,
+    sid,
+    question_name,
+    points,
+    deadline,
+    practice_start_time=None,
+    db=None,
+    now=None,
+):
+    query = (
+        (db.microparsons_answers.course_name == course_name)
+        & (db.microparsons_answers.sid == sid)
+        & (db.microparsons_answers.div_id == question_name)
+    )
+    if deadline:
+        query = query & (db.microparsons_answers.timestamp < deadline)
+    if practice_start_time:
+        query = query & (db.microparsons_answers.timestamp >= practice_start_time)
+        if now:
+            query = query & (db.microparsons_answers.timestamp <= now)
+    return db(query).select(orderby=db.microparsons_answers.timestamp)
 
 
 def _scorable_fitb_answers(
@@ -513,17 +608,32 @@ def _autograde_one_q(
         scoring_fn = _score_one_code_run
         logger.debug("AGDB - done with activecode")
     elif question_type == "mchoice":
-        results = _scorable_mchoice_answers(
-            course_name,
-            sid,
-            question_name,
-            points,
-            deadline,
-            practice_start_time,
-            db=db,
-            now=now,
-        )
-        scoring_fn = _score_one_mchoice
+        logger.debug(f"PEER - {autograde}")
+        if autograde in ["peer", "peer_chat"]:
+            results = _scorable_useinfos(
+                course_name,
+                sid,
+                question_name,
+                points,
+                deadline,
+                None,
+                practice_start_time,
+                db=db,
+                now=now,
+            )
+            scoring_fn = _score_peer_instruction
+        else:
+            results = _scorable_mchoice_answers(
+                course_name,
+                sid,
+                question_name,
+                points,
+                deadline,
+                practice_start_time,
+                db=db,
+                now=now,
+            )
+            scoring_fn = _score_one_mchoice
         logger.debug("AGDB - done with mchoice")
     elif question_type == "page":
         # question_name does not help us
@@ -619,6 +729,35 @@ def _autograde_one_q(
         )
         scoring_fn = _score_one_khanex
         logger.debug("AGDB - done with khanex")
+    elif question_type == "webwork":
+        logger.debug("grading a WebWork!!")
+        results = _scorable_webwork_answers(
+            course_name,
+            sid,
+            question_name,
+            points,
+            deadline,
+            practice_start_time,
+            db=db,
+            now=now,
+        )
+        scoring_fn = _score_one_webwork
+        logger.debug("AGDB - done with webwork")
+
+    elif question_type == "hparsons":
+        logger.debug("grading a microparsons!!")
+        results = _scorable_microparsons_answers(
+            course_name,
+            sid,
+            question_name,
+            points,
+            deadline,
+            practice_start_time,
+            db=db,
+            now=now,
+        )
+        scoring_fn = _score_one_microparsons
+        logger.debug("AGDB - done with microparsons")
 
     elif question_type == "codelens":
         if (
@@ -702,6 +841,20 @@ def _autograde_one_q(
             id = best_row.id
             score = scoring_fn(best_row, points, autograde)
             logger.debug("SCORE = %s by %s", score, scoring_fn)
+        elif (
+            which_to_grade == "all_answer"
+        ):  # This is used for scoring peer instruction where we want to look at multiple answers
+            # TODO: This will need to change if there are other question types
+            # that support the all_answer which to grade.
+            if scoring_fn == _score_peer_instruction:
+                score = scoring_fn(results, points, autograde)
+                id = None
+                logger.debug("SCORE = %s by %s", score, scoring_fn)
+            else:
+                logger.error(
+                    "Scoring function must be _score_peer_instruction for all_answer"
+                )
+
         else:
             logger.error("Unknown Scoring Scheme %s ", which_to_grade)
             id = 0

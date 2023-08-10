@@ -47,7 +47,7 @@ import CodeChat.CodeToRest
 # `copyright <http://sphinx-doc.org/config.html#confval-copyright>`_:
 # General information about the project. **Change this** for your project.
 project = "Runestone Server"
-copyright = "2020, Runestone Interactive LLC"
+copyright = "2020, Runestone Academy Ltd"
 
 # The version info for the project you're documenting, acts as replacement for
 # ``|version|`` and ``|release|``, also used in various other places throughout
@@ -139,10 +139,11 @@ CodeChat_lexer_for_glob = {
     # Likewise, HTML and JS files are auto-detected incorrectly.
     "*.html": "HTML",
     "*.js": "JavaScript",
-    # The Dockerfile has ``#`` as comments. So does Perl...
-    "Dockerfile": "Perl",
-    "*.conf": "Perl",
-    "runestone": "Perl",
+    # The Dockerfile has ``#`` as comments. So do INI files...
+    "Dockerfile": "INI",
+    "*.conf": "INI",
+    "runestone.template": "INI",
+    ".dockerignore": "INI",
     # Docker's env files are INI formatted.
     ".env*": "INI",
 }
@@ -173,6 +174,7 @@ exclude_patterns = [
     ".DS_Store",
     ".pytest_cache",
     "tests/.pytest_cache",
+    ".venv",
     # Don't build textbooks.
     "books",
     # Ignore Runestone files.
@@ -210,6 +212,7 @@ exclude_patterns = [
     "jobeinabox/include",
     # Ignore the Sphinx build directory output.
     "_build",
+    "tests/test_course_1/build",
     # **CodeChat notes:**
     #
     # The ``CodeToRestSphinx`` extension creates a file named

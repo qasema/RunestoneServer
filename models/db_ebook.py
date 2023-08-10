@@ -39,7 +39,6 @@ db.define_table(
     Field("code", "text"),
     Field("emessage", "text"),
     Field("course_id", "integer"),
-    Field("grade", "double"),
     Field("sid", "string"),
     Field("timestamp", "datetime"),
     Field("comment", "text"),
@@ -66,19 +65,6 @@ db.define_table(
     migrate=bookserver_owned("source_code"),
 )
 
-# acerror_log
-# ----------
-# TODO: remove this definition after safely backing up and removing the table from academy
-db.define_table(
-    "acerror_log",
-    Field("timestamp", "datetime"),
-    Field("sid", "string"),
-    Field("div_id", "string"),
-    Field("course_id", "string"),
-    Field("code", "text"),
-    Field("emessage", "text"),
-    migrate=table_migrate_prefix + "acerror_log.table",
-)
 
 ##table to store the last position of the user. 1 row per user, per course
 # user_state
@@ -247,6 +233,35 @@ db.define_table(
     Field("percent", "double"),
     migrate=bookserver_owned("unittest_answers"),
 )
+
+# webwork_answers
+# ------------
+db.define_table(
+    "webwork_answers",
+    Field("timestamp", "datetime"),
+    Field("div_id", "string"),
+    Field("sid", "string"),
+    Field("course_name", "string"),
+    Field("answer", "json"),
+    Field("correct", "boolean"),
+    Field("percent", "double"),
+    migrate=bookserver_owned("webwork_answers"),
+)
+
+# webwork_answers
+# ------------
+db.define_table(
+    "microparsons_answers",
+    Field("timestamp", "datetime"),
+    Field("div_id", "string"),
+    Field("sid", "string"),
+    Field("course_name", "string"),
+    Field("answer", "json"),
+    Field("correct", "boolean"),
+    Field("percent", "double"),
+    migrate=bookserver_owned("microparsons_answers"),
+)
+
 
 # payments
 # --------

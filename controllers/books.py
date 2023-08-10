@@ -21,8 +21,9 @@ import posixpath
 import json
 import logging
 import datetime
-import importlib
+import pathlib
 import random
+import re
 
 logger = logging.getLogger(settings.logger)
 logger.setLevel(settings.log_level)
@@ -38,6 +39,7 @@ logger.setLevel(settings.log_level)
 
 # Supporting functions
 # ====================
+# THIS FUNCTION IS DEPRECATED
 def _route_book(is_published=True):
     # Get the base course passed in ``request.args[0]``, or return a 404 if that argument is missing.
     base_course = request.args(0)
@@ -200,7 +202,7 @@ def _route_book(is_published=True):
     ):
         # See the `response <http://web2py.com/books/default/chapter/29/04/the-core#response>`_.
         # Warning: this is slow. Configure a production server to serve this statically.
-        return response.stream(book_path, 2 ** 20, request=request)
+        return response.stream(book_path, 2**20, request=request)
 
     # It's HTML -- use the file as a template.
     #
@@ -404,41 +406,22 @@ def index():
 
     Produce a list of books based on the directory structure of runestone/books
 
+    TODO: Port this to books in bookserver
+
     """
 
-    book_list = os.listdir("applications/{}/books".format(request.application))
-    book_list = [book for book in book_list if ".git" not in book]
+    redirect("/ns/books/index")
 
-    res = []
-    for book in sorted(book_list):
-        try:
-            # WARNING: This imports from ``applications.<runestone application name>.books.<book name>``. Since ``runestone/books/<book_name>`` lacks an ``__init__.py``, it will be treated as a `namespace package <https://www.python.org/dev/peps/pep-0420/>`_. Therefore, odd things will happen if there are other modules named ``applications.<runestone application name>.books.<book name>`` in the Python path.
-            config = importlib.import_module(
-                "applications.{}.books.{}.conf".format(request.application, book)
-            )
-        except Exception as e:
-            logger.error("Error in book list: {}".format(e))
-            continue
-        book_info = {}
-        book_info.update(course_description="")
-        book_info.update(key_words="")
-        if hasattr(config, "navbar_title"):
-            book_info["title"] = config.navbar_title
-        elif hasattr(config, "html_title"):
-            book_info["title"] = config.html_title
-        elif hasattr(config, "html_short_title"):
-            book_info["title"] = config.html_short_title
-        else:
-            book_info["title"] = "Runestone Book"
-        # update course description if found in the book's conf.py
-        if hasattr(config, "course_description"):
-            book_info.update(course_description=config.course_description)
-        # update course key_words if found in book's conf.py
-        if hasattr(config, "key_words"):
-            book_info.update(key_words=config.key_words)
-        book_info["url"] = "/{}/books/published/{}/index.html".format(
-            request.application, book
-        )
-        book_info["regname"] = book
-        res.append(book_info)
-    return dict(book_list=res)
+
+#
+# PreTeXt books are set up with an index.thml that meta refreshes to the real start page.
+# This is great for flexibility but not good for ?mode=browsing or for SEO scores.
+# We can parse the "real" home page for the book from index.html
+def _find_real_url(libdir, book):
+    idx = pathlib.Path(libdir, book, "published", book, "index.html")
+    if idx.exists():
+        with open(idx, "r") as idxf:
+            for line in idxf:
+                if g := re.search(r"refresh.*URL='(.*?)'", line):
+                    return g.group(1)
+    return "index.html"

@@ -21,6 +21,10 @@ h5 {
     white-space: pre;
 }
 
+div#component-preview {
+    background: white;
+}
+
 /* navbar and menu related styles */
 @media (max-width: 768px) {
 
@@ -182,6 +186,11 @@ input[type="button"].btn.btn-sm {
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
+
+ /* Fix search menu button */
+ .dropdown-menu .input-group .input-group-btn button.btn {
+     font-size: 14px;
+ }
 .btn {
     margin: 5px 0;
 }
@@ -305,15 +314,19 @@ div.flash {
 /* Styles for the login, registration, and Janrain forms */
 #web2py_user_form {
     margin-top: 10px;
+    margin-right: 20px;
+    max-height: 300px;
+    margin-bottom: 20px;
 }
 
 #web2py_user_form form {
-    float: left;
-    margin-right: 150px;
+
     padding-top: 3px;
 }
 
-#web2py_user_form td {
+#web2py_user_form td,
+#web2py_register_form td,
+#web2py_profile_form td {
     padding-bottom: 15px;
 }
 
@@ -624,6 +637,11 @@ div.settingsbox {
     width: 1px;
     white-space: nowrap;
     /* 1 */
+}
+
+/* hide original webwork problem when an iframe is opened */
+div.hidden-content {
+    display: none;
 }
 
 /*

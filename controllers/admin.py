@@ -22,6 +22,7 @@ from random import randint
 
 # Third Party library
 # -------------------
+import boto3, botocore  # for the S3 API
 from dateutil.parser import parse
 from rs_grading import _get_assignment, send_lti_grades
 from runestone import cmap
@@ -39,15 +40,16 @@ ALL_AUTOGRADE_OPTIONS = ["manual", "all_or_nothing", "pct_correct", "interact"]
 AUTOGRADE_POSSIBLE_VALUES = dict(
     actex=ALL_AUTOGRADE_OPTIONS,
     activecode=ALL_AUTOGRADE_OPTIONS,
-    clickablearea=["manual", "all_or_nothing", "interact"],
+    clickablearea=["manual", "all_or_nothing", "pct_correct", "interact"],
     codelens=ALL_AUTOGRADE_OPTIONS,
     datafile=[],
-    dragndrop=["manual", "all_or_nothing", "interact"],
+    dragndrop=["manual", "all_or_nothing", "pct_correct", "interact"],
     external=[],
     fillintheblank=ALL_AUTOGRADE_OPTIONS,
     khanex=ALL_AUTOGRADE_OPTIONS,
+    hparsons=ALL_AUTOGRADE_OPTIONS,
     lp_build=ALL_AUTOGRADE_OPTIONS,
-    mchoice=ALL_AUTOGRADE_OPTIONS,
+    mchoice=ALL_AUTOGRADE_OPTIONS + ["peer", "peer_chat"],
     page=["interact"],
     parsonsprob=ALL_AUTOGRADE_OPTIONS,
     poll=["interact"],
@@ -57,6 +59,7 @@ AUTOGRADE_POSSIBLE_VALUES = dict(
     shortanswer=ALL_AUTOGRADE_OPTIONS,
     showeval=["interact"],
     video=["interact"],
+    webwork=ALL_AUTOGRADE_OPTIONS,
     youtube=["interact"],
 )
 
@@ -67,9 +70,11 @@ AUTOGRADEABLE = set(
         "fillintheblank",
         "khanex",
         "mchoice",
+        "hparsons",
         "parsonsprob",
         "quizly",
         "selectquestion",
+        "webwork",
     ]
 )
 
@@ -83,9 +88,10 @@ WHICH_TO_GRADE_POSSIBLE_VALUES = dict(
     dragndrop=ALL_WHICH_OPTIONS,
     external=[],
     fillintheblank=ALL_WHICH_OPTIONS,
+    hparsons=ALL_WHICH_OPTIONS,
     khanex=ALL_WHICH_OPTIONS,
     lp_build=ALL_WHICH_OPTIONS,
-    mchoice=ALL_WHICH_OPTIONS,
+    mchoice=ALL_WHICH_OPTIONS + ["all_answer"],
     page=ALL_WHICH_OPTIONS,
     parsonsprob=ALL_WHICH_OPTIONS,
     poll=[],
@@ -95,6 +101,7 @@ WHICH_TO_GRADE_POSSIBLE_VALUES = dict(
     shortanswer=ALL_WHICH_OPTIONS,
     showeval=ALL_WHICH_OPTIONS,
     video=[],
+    webwork=ALL_WHICH_OPTIONS,
     youtube=[],
 )
 
@@ -129,9 +136,9 @@ def assignments():
         assigndict[row.id] = row.name
 
     tags = []
-    tag_query = db(db.tags).select()
-    for tag in tag_query:
-        tags.append(tag.tag_name)
+    # tag_query = db(db.tags).select()
+    # for tag in tag_query:
+    #     tags.append(tag.tag_name)
 
     course = get_course_row(db.courses.ALL)
     base_course = course.base_course
@@ -168,13 +175,16 @@ def practice():
     course_start_date = course.term_start_date
 
     start_date = course_start_date + datetime.timedelta(days=13)
-    end_date = ""
+    end_date = start_date + datetime.timedelta(weeks=12)  # provide a reasonable default
     max_practice_days = 50
     max_practice_questions = 500
     day_points = 2
     question_points = 0.2
     questions_to_complete_day = 10
     flashcard_creation_method = 0
+    # 0 is self paced - when a student marks a page complete
+    # 1 is removed - it was for when a reading assignment deadline passes but was not implemented
+    # 2 is manually as checked by the instructor
     graded = 1
     spacing = 0
     interleaving = 0
@@ -189,14 +199,20 @@ def practice():
     error_graded = 0
 
     already_exists = 0
-    any_practice_settings = db(db.course_practice.auth_user_id == auth.user.id)
+    any_practice_settings = db(
+        (db.course_practice.auth_user_id == auth.user.id)
+        | (db.course_practice.course_name == course.course_name)
+    )
+
     practice_settings = any_practice_settings(
         db.course_practice.course_name == course.course_name
     )
     # If the instructor has created practice for other courses, don't randomize spacing and interleaving for the new
     # course.
     if not any_practice_settings.isempty():
-        any_practice_settings = any_practice_settings.select().first()
+        any_practice_settings = any_practice_settings.select(
+            orderby=~db.course_practice.id
+        ).first()
         spacing = any_practice_settings.spacing
         interleaving = any_practice_settings.interleaving
 
@@ -204,10 +220,18 @@ def practice():
         #  If not, stick with the defaults.
         if (
             not practice_settings.isempty()
-            and practice_settings.select().first().end_date is not None
-            and practice_settings.select().first().end_date != ""
+            and practice_settings.select(orderby=~db.course_practice.id)
+            .first()
+            .end_date
+            is not None
+            and practice_settings.select(orderby=~db.course_practice.id)
+            .first()
+            .end_date
+            != ""
         ):
-            practice_setting = practice_settings.select().first()
+            practice_setting = practice_settings.select(
+                orderby=~db.course_practice.id
+            ).first()
             start_date = practice_setting.start_date
             end_date = practice_setting.end_date
             max_practice_days = practice_setting.max_practice_days
@@ -225,7 +249,7 @@ def practice():
             spacing = 1
         if randint(0, 1) == 1:
             interleaving = 1
-    if practice_settings.isempty():
+    if practice_settings.isempty():  # If there are no settings for THIS course
         db.course_practice.insert(
             auth_user_id=auth.user.id,
             course_name=course.course_name,
@@ -632,6 +656,12 @@ def admin():
 @auth.requires_login()
 def course_students():
     response.headers["content-type"] = "application/json"
+    row = get_course_row()
+    if row.course_name == row.base_course and not verifyInstructorStatus(
+        auth.user.course_id, auth.user
+    ):
+        return json.dumps({"message": "invalid call for this course"})
+
     cur_students = db(
         (db.user_courses.course_id == auth.user.course_id)
         & (db.auth_user.id == db.user_courses.user_id)
@@ -881,6 +911,8 @@ def removeinstructor():
         return json.dumps(removed)
 
 
+# This function is used from the web admin page to add TA's or co-instructors to the course.
+# It is not used by the rsmanage command.
 @auth.requires(
     lambda: verifyInstructorStatus(auth.user.course_id, auth.user),
     requires_login=True,
@@ -925,6 +957,9 @@ def deletecourse():
             students.update(course_id=bcid)
             uset = db(db.user_courses.course_id == courseid)
             uset.delete()
+            # remove the rows from useinfo
+            infoset = db(db.useinfo.course_id == course_name)
+            infoset.delete()
             db(db.courses.id == courseid).delete()
             try:
                 session.clear()
@@ -1099,8 +1134,15 @@ def questionBank():
     query_clauses = []
 
     # should we search the question by term?
+    term_list = []
     if request.vars.term:
         term_list = [x.strip() for x in request.vars.term.split()]
+
+    # this will not be perfect but is an ok start.
+    if request.vars["language"] != "python" and request.vars["language"] != "any":
+        term_list.append(f':language: {request.vars["language"]}')
+
+    if term_list:
         query_clauses.append(db.questions.question.contains(term_list, all=True))
 
     if request.vars["chapter"]:
@@ -1149,7 +1191,6 @@ def questionBank():
     for clause in query_clauses[1:]:
         myquery = myquery & clause
 
-    print(myquery)
     rows = db(myquery).select()
 
     questions = []
@@ -1348,12 +1389,11 @@ def question_text():
     try:
         q_text = db(query).select(db.questions.question).first().question
     except Exception:
-        q_text = "Error: Could not find source for {} in the database".format(qname)
+        q_text = f"Error: Could not find source for {qname} in the database"
 
-    if (
-        q_text[0:2] == "\\x"
-    ):  # workaround Python2/3 SQLAlchemy/DAL incompatibility with text
-        q_text = q_text[2:].decode("hex")
+    if q_text == None:
+        q_text = f"Error: Could not find source for {qname} in the database"
+
     logger.debug(q_text)
     return json.dumps(q_text)
 
@@ -1484,11 +1524,26 @@ def createquestion():
                 acid=divid,
             )
         else:
+            max_sort = (
+                db(db.assignment_questions.assignment_id == assignmentid)
+                .select(
+                    db.assignment_questions.sorting_priority,
+                    orderby=~db.assignment_questions.sorting_priority,
+                )
+                .first()
+            )
+            if max_sort:
+                max_sort = max_sort.sorting_priority + 1
+            else:
+                max_sort = 0
             db.assignment_questions.insert(
                 assignment_id=assignmentid,
                 question_id=newqID,
                 timed=timed,
                 points=points,
+                autograde=unittest or "pct_correct",
+                which_to_grade="best_answer",
+                sorting_priority=max_sort,
             )
 
         returndict = {request.vars["name"]: newqID, "timed": timed, "points": points}
@@ -1563,7 +1618,38 @@ def htmlsrc():
         htmlsrc and htmlsrc[0:2] == "\\x"
     ):  # Workaround Python3/Python2  SQLAlchemy/DAL incompatibility with text columns
         htmlsrc = htmlsrc.decode("hex")
-    return json.dumps(htmlsrc)
+
+    result = {"htmlsrc": htmlsrc}
+    logger.debug("htmlsrc = {htmlsrc}")
+    if "data-attachment" in htmlsrc:
+        # get the URL for the attachment, but we need the course, the user and the divid
+        session = boto3.session.Session()
+        client = session.client(
+            "s3",
+            config=botocore.config.Config(s3={"addressing_style": "virtual"}),
+            region_name=settings.region,
+            endpoint_url="https://nyc3.digitaloceanspaces.com",
+            aws_access_key_id=settings.spaces_key,
+            aws_secret_access_key=settings.spaces_secret,
+        )
+
+        prepath = f"{auth.user.course_name}/{acid}/{studentId}"
+        logger.debug(f"checking path {prepath}")
+        response = client.list_objects(Bucket=settings.bucket, Prefix=prepath)
+        logger.debug(f"response = {response}")
+        if response and "Contents" in response:
+            obj = response["Contents"][0]
+            logger.debug("key = {obj['Key']}")
+            url = client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": settings.bucket, "Key": obj["Key"]},
+                ExpiresIn=300,
+            )
+
+        else:
+            url = ""
+        result["attach_url"] = url
+    return json.dumps(result)
 
 
 @auth.requires(
@@ -1636,6 +1722,8 @@ def get_assignment_release_states():
         return json.dumps({})
 
 
+# Called to assemble the list of questions for the assignment builder
+#
 def _get_toc_and_questions():
     # return a dictionary with a nested dictionary representing everything the
     # picker will need in the instructor's assignment authoring tab
@@ -1845,6 +1933,7 @@ def _get_toc_and_questions():
 
 # This is the place to add meta information about questions for the
 # assignment builder
+# TODO: Incorporate which_to_grade stuff in here.
 def _add_q_meta_info(qrow):
     qt = {
         "mchoice": "Mchoice ✓",
@@ -1863,6 +1952,8 @@ def _add_q_meta_info(qrow):
         "fillintheblank": "FillB ✓",
         "quizly": "Quizly ✓",
         "khanex": "KhanAcademy ✓",
+        "webwork": "WebWork ✓",
+        "hparsons": "MicroParsons ✓",
     }
     qt = qt.get(qrow.questions.question_type, "")
 
@@ -1892,6 +1983,9 @@ def _add_q_meta_info(qrow):
     requires_login=True,
 )
 def get_assignment():
+    """
+    Called when ann assignment is chosed on the assignmentn builder page
+    """
     try:
         assignment_id = int(request.vars.assignmentid)
     except (TypeError, ValueError):
@@ -1927,6 +2021,7 @@ def get_assignment():
     assignment_data["nofeedback"] = assignment_row.nofeedback
     assignment_data["nopause"] = assignment_row.nopause
     assignment_data["is_peer"] = assignment_row.is_peer
+    assignment_data["peer_async_visible"] = assignment_row.peer_async_visible
 
     # Still need to get:
     #  -- timed properties of assignment
@@ -2031,6 +2126,7 @@ def save_assignment():
     nofeedback = request.vars["nofeedback"]
     nopause = request.vars["nopause"]
     is_peer = request.vars["is_peer"]
+    peer_async_visible = request.vars["peer_async_visible"]
     try:
         d_str = request.vars["due"]
         format_str = "%Y/%m/%d %H:%M"
@@ -2053,6 +2149,7 @@ def save_assignment():
             nopause=nopause,
             is_peer=is_peer,
             current_index=0,
+            peer_async_visible=peer_async_visible,
         )
         return json.dumps({request.vars["name"]: assignment_id, "status": "success"})
     except Exception as ex:
@@ -2096,7 +2193,9 @@ def add__or_update_assignment_question():
     # This assumes that question will always be in DB already, before an assignment_question is created
     logger.debug("course_id %s", auth.user.course_id)
     if not question_id:
-        question_id = _get_question_id(question_name, auth.user.course_id)
+        question_id = _get_question_id(
+            question_name, auth.user.course_id, assignment_id=assignment_id
+        )
     if question_id is None:
         logger.error(
             "Question Not found for name = {} course = {}".format(
@@ -2161,8 +2260,10 @@ def add__or_update_assignment_question():
     except Exception:
         points = activity_count
 
-    autograde = request.vars.get("autograde")
-    which_to_grade = request.vars.get("which_to_grade")
+    # If no autograde type is provided, use ``interact`` as a fallback, since this works for all questions types.
+    autograde = request.vars.get("autograde", "interact")
+    # Use ``best_answer`` as a safe fallback (see ``WHICH_TO_GRADE_POSSIBLE_VALUES`` in this file. )
+    which_to_grade = request.vars.get("which_to_grade", "best_answer")
     # Make sure the defaults are set correctly for activecode Qs
     if (
         question_type in ("activecode", "actex") and auto_grade != "unittest"
@@ -2170,6 +2271,8 @@ def add__or_update_assignment_question():
         if autograde and autograde not in ("manual", "interact"):
             autograde = "manual"
             which_to_grade = ""
+    if autograde is None:
+        autograde = "pct_correct"
     try:
         # save the assignment_question
         db.assignment_questions.update_or_insert(
@@ -2212,11 +2315,28 @@ def add__or_update_assignment_question():
 # by name.  If there is only one match then no problem.  If there is more than one
 # then the base course of the current user should be preferred to ensure
 # backward compatibility.
-def _get_question_id(question_name, course_id):
+def _get_question_id(question_name, course_id, assignment_id=None):
     # first try to just get the question by name.
     question = db((db.questions.name == question_name)).select(db.questions.id)
     # if there is more than one then use the course_id
     if len(question) > 1:
+        # prefer to use the assignment if it is there, but when adding a question by name
+        # it will not be in the assignment so this will fail and we fall back to using
+        # the course.
+        if assignment_id:
+            question = (
+                db(
+                    (db.questions.name == question_name)
+                    & (db.questions.id == db.assignment_questions.question_id)
+                    & (db.assignment_questions.assignment_id == assignment_id)
+                )
+                .select(db.questions.id)
+                .first()
+            )
+
+        if question:
+            return int(question.id)
+
         question = (
             db(
                 (db.questions.name == question_name)
@@ -2274,7 +2394,9 @@ def delete_assignment_question():
     try:
         question_name = request.vars["name"]
         assignment_id = int(request.vars["assignment_id"])
-        question_id = _get_question_id(question_name, auth.user.course_id)
+        question_id = _get_question_id(
+            question_name, auth.user.course_id, assignment_id=assignment_id
+        )
         logger.debug("DELETEING A: %s Q:%s ", assignment_id, question_id)
         db(
             (db.assignment_questions.assignment_id == assignment_id)
@@ -2337,7 +2459,9 @@ def reorder_assignment_questions():
     i = 0
     for name in question_names:
         i += 1
-        question_id = _get_question_id(name, auth.user.course_id)
+        question_id = _get_question_id(
+            name, auth.user.course_id, assignment_id=assignment_id
+        )
         db(
             (db.assignment_questions.question_id == question_id)
             & (db.assignment_questions.assignment_id == assignment_id)
@@ -2701,7 +2825,7 @@ def get_assignment_list():
     course_name = request.vars.course_name
     course = db(db.courses.course_name == course_name).select().first()
     assign_list = db(db.assignments.course == course.id).select(
-        db.assignments.id, db.assignments.name, orderby=db.assignments.duedate
+        db.assignments.id, db.assignments.name, orderby=db.assignments.name
     )
     res = []
     for assign in assign_list:
@@ -2877,6 +3001,22 @@ def reset_exam():
             logger.debug(f"deleted {q.name} for {username} {num}")
 
     return json.dumps({"status": "Success", "mess": "Successfully Reset Exam"})
+
+
+# This displays the table that collects tickets across workers
+# for this to work you will need to add a row to ``auth_group`` with the role ``admins``
+# In addition any user that you want to have access to these tracebacks will need
+# to have their user_id and the group id for admins added to the ``auth_membership`` table.
+# This will require some manual sql manipulation.
+@auth.requires_membership("admins")
+def tickets():
+    ticks = db.executesql(
+        """
+    select * from traceback order by timestamp desc
+    """,
+        as_dict=True,
+    )
+    return dict(tickets=ticks)
 
 
 def killer():

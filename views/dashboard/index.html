@@ -14,8 +14,9 @@
         <span class="dash-title-description">{{=course.course_name}} Instructor Dashboard</span>
         <a href="{{=URL('dashboard','subchapoverview')}}" class="btn btn-med btn-primary" role="button" style="float: right; font-size: small;">Chapter Activity</a>
     </h1>
-    <h2 style="width: 800px; display: inline;">{{=selected_chapter['chapter_name']}}</h2>
-    <div style="float: right"><b>Select Chapter</b>
+    <div >
+        <span style="font-size: 18px; margin-left:4%">{{=selected_chapter['chapter_name']}}</span>
+    <b><span style="margin-left: 30px;">Select Chapter</span></b>
         <select onchange="window.location=[window.location.protocol, '//', window.location.host, window.location.pathname].join('') + '?chapter=' + this.value;">
             {{for chapter in chapters:}}
                 {{if chapter['chapter_label'] == selected_chapter['chapter_label']: }}
@@ -50,7 +51,16 @@
                 {{ for section in sections: }}
                     {{ sectionnumber=section["number"] }}
                     <div style="height: 30px;">
-                        <div style="font-size:1.0em; font-weight: bold; margin-top: 0.5em;"><a style="color:black;" href="{{=get_course_url(selected_chapter['chapter_label'], section['text'])}}.html">{{=section["name"]}}</a></div>
+                        <div style="font-size:1.0em; font-weight: bold; margin-top: 0.5em;">
+                            {{ if origin == "Runestone":}}
+                            <a style="color:black;" href="{{=get_course_url(selected_chapter['chapter_label'], section['text'])}}.html">{{=section["name"]}}</a>
+                            {{ else: }}
+                            <a style="color:black;" href="{{=get_course_url("", section['text'])}}.html">{{=section["name"]}}</a>
+
+                            {{ pass }}
+
+                        </div>
+
                         <div style="" class="dash-bar-container">
                             <div class="dash-bar dash-bar-correct" style="width: {{=section['readPercent']}};"> {{=section["readPercent"]}}&nbsp;</div>
                             <div class="dash-bar dash-bar-attempts" style=" width: {{=section['startedPercent']}};"> {{=section["startedPercent"]}}&nbsp;</div>

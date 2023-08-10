@@ -27,6 +27,7 @@ db.define_table(
     Field("from_source", "boolean", default=False),
     Field("nofeedback", "boolean"),
     Field("nopause", "boolean"),
+    Field("peer_async_visible", "boolean", default=False),
     format="%(name)s",
     migrate=bookserver_owned("assignments"),
 )
@@ -39,7 +40,6 @@ db.define_table(
     Field("assignment", db.assignments),
     Field("score", "double"),
     Field("manual_total", "boolean", default=False),
-    Field("projected", "double"),
     # guid for the student x assignment cell in the external gradebook
     #
     # Guessing that the ``lis_outcome_url`` length is actually inteded for this field, use that as its maximum length.

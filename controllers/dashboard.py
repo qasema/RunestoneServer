@@ -124,6 +124,11 @@ def index():
     chapters = db(db.chapters.course_id == course.base_course).select(
         orderby=db.chapters.chapter_num
     )
+    c_origin = getCourseOrigin(course.base_course)
+    if c_origin and c_origin.value == "PreTeXt":
+        c_origin = "PreTeXt"
+    else:
+        c_origin = "Runestone"
 
     logger.debug("getting chapters for {}".format(auth.user.course_name))
     chapget = ChapterGet(chapters)
@@ -320,6 +325,7 @@ def index():
         studentactivity=studentactivity,
         recentactivity=recentactivity,
         dailyactivity=dailyactivity,
+        origin=c_origin,
     )
 
 
@@ -535,7 +541,10 @@ def grades():
             if total_possible_points > 0
             else "n/a",
         }
-    practice_average /= len(students)
+    try:
+        practice_average /= len(students)
+    except ZeroDivisionError:
+        practice_average = 0.0
     practice_average = "{0:.2f}".format(practice_average)
 
     # create a matrix indexed by user.id and assignment.id
